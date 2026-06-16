@@ -265,10 +265,8 @@
 
   <script>
     const RSS_URL = "https://th.investing.com/rss/news_25.rss";
-    const PROXIES = [
-      url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
-      url => `https://corsproxy.io/?${encodeURIComponent(url)}`
-    ];
+    // rss2json is a dedicated RSS-to-JSON service that handles CORS and encoding
+    const RSS2JSON = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(RSS_URL)}`;
 
     function parseDate(str) {
       if (!str) return "";
@@ -281,28 +279,6 @@
       return html ? html.replace(/<[^>]+>/g, "").trim() : "";
     }
 
-    function getImage(item) {
-      // Try <enclosure> first
-      const enc = item.querySelector("enclosure");
-      if (enc) {
-        const url = enc.getAttribute("url");
-        const type = enc.getAttribute("type") || "";
-        if (url && type.startsWith("image")) return url;
-        if (url && /\.(jpg|jpeg|png|webp|gif)/i.test(url)) return url;
-      }
-      // Try <media:content>
-      const media = item.getElementsByTagNameNS("*", "content")[0];
-      if (media) {
-        const url = media.getAttribute("url");
-        if (url) return url;
-      }
-      // Try image in description
-      const desc = item.querySelector("description")?.textContent || "";
-      const imgMatch = desc.match(/src=["']([^"']+\.(jpg|jpeg|png|webp))/i);
-      if (imgMatch) return imgMatch[1];
-      return null;
-    }
-
     async function loadFeed() {
       const status   = document.getElementById("status");
       const feedList = document.getElementById("feed-list");
@@ -311,27 +287,20 @@
       status.style.display = "block";
       status.textContent = "Loading feed…";
 
-      let xmlText = null;
-      for (let i = 0; i < PROXIES.length; i++) {
-        try {
-          const res = await fetch(PROXIES[i](RSS_URL));
-          if (!res.ok) continue;
-          const json = await res.json().catch(() => null);
-          xmlText = json?.contents ?? null;
-          if (xmlText && xmlText.includes("<item>")) break;
-          xmlText = null;
-        } catch (_) { /* try next */ }
-      }
-
-      if (!xmlText) {
+      let items = [];
+      try {
+        const res  = await fetch(RSS2JSON);
+        const data = await res.json();
+        if (data.status === "ok" && data.items?.length) {
+          items = data.items;
+        } else {
+          throw new Error(data.message || "Feed returned no items");
+        }
+      } catch (err) {
         status.className   = "error";
-        status.textContent = "⚠ Could not load feed. The source site may block external requests. Upload this file to SharePoint Site Assets and try again.";
+        status.textContent = `⚠ Could not load feed: ${err.message}`;
         return;
       }
-
-      const parser = new DOMParser();
-      const doc    = parser.parseFromString(xmlText, "text/xml");
-      const items  = [...doc.querySelectorAll("item")];
 
       if (items.length === 0) {
         status.textContent = "No items found in feed.";
@@ -339,17 +308,18 @@
       }
 
       status.style.display = "none";
-
       document.getElementById("last-updated").textContent =
         `Updated ${new Date().toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}`;
 
       items.forEach(item => {
-        const title  = item.querySelector("title")?.textContent?.trim() || "(No title)";
-        const link   = item.querySelector("link")?.textContent?.trim() || "#";
-        const date   = parseDate(item.querySelector("pubDate")?.textContent);
-        const source = item.querySelector("source")?.textContent?.trim() || "Investing.com";
-        const desc   = stripHtml(item.querySelector("description")?.textContent || "");
-        const imgUrl = getImage(item);
+        const title  = item.title?.trim() || "(No title)";
+        const link   = item.link  || "#";
+        const date   = parseDate(item.pubDate);
+        const source = item.author || "Investing.com";
+        const desc   = stripHtml(item.description || item.content || "");
+        const imgUrl = item.thumbnail && item.thumbnail !== "self"
+                       ? item.thumbnail
+                       : (item.enclosure?.link || null);
 
         const li = document.createElement("li");
         li.className = "card";
@@ -373,6 +343,8 @@
         feedList.appendChild(li);
       });
     }
+
+
 
     loadFeed();
   </script>
